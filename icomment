@@ -1,0 +1,132 @@
+#!/bin/bash
+file_path=$1
+comment=$2
+git_user_name=$(git config user.name)
+
+if [ ! -e "$file_path" ]; then
+    echo -e "\033[31mThe path $file_path does not exist..\033[0m"
+    exit 1
+fi
+
+if [ "$comment" == "" ]; then
+    echo -e "\033[31mThe comment is empty.\033[0m"
+    exit 0
+fi
+
+comment="$git_user_name $comment"
+
+files=$(git diff --name-only --cached $file_path)
+if [ "${files[0]}" == "" ]; then
+    echo -e "\033[31mNo file added.\033[0m"
+    exit 0
+fi
+
+count=0
+
+today=$(date "+%Y-%m-%d")
+
+get_leading_spaces() {
+  local input_string="$1"
+  # 使用grep命令获取字符串前面的空格或tab，并将其赋值给变量
+  local leading_spaces=$(echo "$input_string" | grep -o '^[ \t]*')
+  echo "$leading_spaces"
+}
+
+get_markup() {
+    # 定义后缀名和注释符的数组
+    declare -A markup=(["java"]="//" ["py"]="#" ["sh"]="#" ["mk"]="#" ["bp"]="//" ["c"]="//" ["h"]="//" ["rs"]="//" ["cpp"]="//" ["js"]="//" ["xml"]="<!--")
+
+    # 获取输入文件路径和后缀名
+    file_path=$1
+    file_extension=${file_path##*.}
+
+    # 输出对应的注释符
+    echo "${markup[$file_extension]}"
+}
+
+get_end_linenum() {
+    local input=$1
+    if [[ $input == *,* ]]; then
+        # 如果包含逗号，则将逗号替换为空格，并将结果存储在变量中
+        sum_value=($(echo $input | sed 's/,/ /g' | awk '{print $1+$2, $1}'))
+        add_length=($(echo $input | sed 's/,/ /g' | awk '{print $2}'))
+        origin_start_line=${sum_value[0]}
+        origin_end_line=${sum_value[1]}
+        # echo add length $add_length
+        # echo origin_start_line $origin_start_line
+        # echo origin_end_line $origin_end_line
+    else
+        # 如果不包含逗号，则直接将结果存储在变量中
+        origin_start_line=$input
+        origin_end_line=$input
+        add_length="-1"
+    fi
+}
+
+# 插入注释的主函数
+insert_comment() {
+    local line="$1"
+    local range=$(echo "$line" | grep -o -E "@@.*@@" | sed "s/@@//g")
+    read delete_line add_line <<<$(echo "$range" | awk '{gsub(/[-+]/,""); print}')
+
+
+    get_end_linenum $add_line
+
+    if [ $add_length -eq 0 ];then
+        return
+    fi
+
+    start_num=$((origin_end_line + count))
+
+    markup=$(get_markup $current_file)
+    markup_end=""
+    if [ "$markup" == "<!--" ]; then
+
+        first_char=$(awk 'NR == '$start_num' { gsub(/^[[:space:]]*/, ""); print substr($0, 1, 1) }' $current_file)
+        if [ "$first_char" != "<" ]; then
+            echo -e "\033[43;5;37;4;1mAdded comments to the XML, please check if there are any errors.!!!!!.\033[0m"
+        fi
+        markup_end="-->"
+    fi
+
+    str=$(sed "$((start_num+1))q;d" "$current_file")  # 读取指定行的字符串
+    prefix=$(get_leading_spaces "$str")
+    insert_string="$prefix$markup$comment $today start$markup_end"
+    sed -i "${start_num}i \\${insert_string}" $current_file
+
+    count=$((count + 1))
+    addition=0
+    if [ "$origin_start_line" == "$origin_end_line" ]; then
+        addition=1
+    fi
+
+    end_num=$((origin_start_line + count + addition))
+
+    str=$(sed "${end_num}q;d" "$current_file")  # 读取指定行的字符串
+    prefix=$(get_leading_spaces "$str")
+    insert_string="$prefix$markup$comment $today end$markup_end"
+    sed -i "${end_num}i \\${insert_string}" $current_file
+    count=$((count + 1))
+}
+
+for file in $files; do
+    # process only regular files
+
+    if [ -f $file ]; then
+        git_diff_output=$(git diff --cached --no-color --unified=0 $file)
+        current_file=$file
+        while IFS= read -r line; do
+
+            if echo "$line" | grep -q "^@@.*@@"; then
+                insert_comment "$line"
+            elif echo "$line" | grep -q "^[+-]"; then
+                continue
+            fi
+        done <<<"$git_diff_output"
+        count=0
+        echo "modified file $current_file"
+        #git add "$current_file"
+    else
+        echo -e "\033[41;5;37;4;1mNo files found to add comments to..\033[0m"
+    fi
+done
